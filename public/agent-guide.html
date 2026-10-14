@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="description" content="Task-management workflow for AI agents using NITC HQ Tasks.">
+  <title>AI agent guide · NITC HQ Tasks</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #28372f; background: #f6f4ef; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 36px 20px 64px; }
+    main { max-width: 820px; margin: 0 auto; }
+    a { color: #316b4e; text-underline-offset: 3px; }
+    .topline { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 40px; font-size: 14px; }
+    .eyebrow { color: #66756c; letter-spacing: .13em; font-size: 11px; font-weight: 700; }
+    h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(36px, 7vw, 56px); line-height: 1.04; font-weight: 500; letter-spacing: -.035em; margin: 10px 0 14px; }
+    .intro { color: #59665e; font-size: 17px; line-height: 1.65; max-width: 690px; }
+    section { border-top: 1px solid #deded5; margin-top: 30px; padding-top: 22px; }
+    h2 { font-family: inherit; font-size: 19px; line-height: 1.3; font-weight: 600; margin: 0 0 12px; }
+    p, li { line-height: 1.65; }
+    ul, ol { padding-left: 23px; }
+    li + li { margin-top: 7px; }
+    code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: #eae9e1; border-radius: 4px; padding: 2px 5px; overflow-wrap: anywhere; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; line-height: 1.6; }
+    th, td { border: 1px solid #deded5; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #eae9e1; }
+    pre { background: #eae9e1; border-radius: 6px; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
+    pre code { background: none; padding: 0; }
+    @media (max-width: 520px) { body { padding: 24px 18px 44px; } .topline { margin-bottom: 30px; } table { font-size: 13px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav class="topline" aria-label="Page navigation"><a href="/">← Back to NITC HQ Tasks</a><span>Local agent reference</span></nav>
+    <header>
+      <p class="eyebrow">NITC HQ TASKS · AGENT GUIDE</p>
+      <h1>Manage tasks on request.</h1>
+      <p class="intro">This guide is for a chat agent with folder access that adds tasks on request: for example, when the user says “I have this work today, add it”, use the local REST API or MCP tools below to add, find, update, complete, or reopen tasks in the NITC HQ Tasks store.</p>
+    </header>
+
+    <section aria-labelledby="adding">
+      <h2 id="adding">Adding a task</h2>
+      <p>Create a task only for concrete work the user has asked to do. Search first (see Finding tasks) so you do not create duplicates.</p>
+      <table>
+        <thead>
+          <tr><th scope="col">Field</th><th scope="col">Semantics</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>title</code></td><td>Short description of the work. Required; keep the user's wording.</td></tr>
+          <tr><td><code>type</code></td><td><code>Coursework</code> for course work, <code>Miscellaneous</code> for non-course work. Infer from the request.</td></tr>
+          <tr><td><code>course</code></td><td><code>Coursework</code> requires one supported course — pick the best match from: General Physics Lab, Thermodynamics, Engineering Graphics, Mechanics, Mechanical Workshop, Mathematics I, Chemical Structure and Bonding, IIT Madras — Programming with Python, or IIT Madras — English 1. <code>Miscellaneous</code> must have no course (<code>null</code>).</td></tr>
+          <tr><td><code>dueDate</code></td><td>Date-only <code>YYYY-MM-DD</code> string or <code>null</code>. Interpret “today”, “tomorrow”, and other clear relative dates in the <strong>Asia/Kolkata</strong> timezone; ask when the intended date is ambiguous. Do not invent a deadline.</td></tr>
+          <tr><td><code>notes</code></td><td>Keep the user's specifics here. Do not invent a course, requirement, deadline, or result to fill an empty field.</td></tr>
+          <tr><td><code>priority</code></td><td>Infer priority from urgency, consequences, and emphasis. Use an integer from 1 (lowest) to 10 (highest); leave it null only when genuinely unknown or preserving an imported blank.</td></tr>
+          <tr><td><code>done</code></td><td>New tasks start not done (<code>false</code>). Change completion only through the complete/reopen actions.</td></tr>
+        </tbody>
+      </table>
+      <p>Create with <code>POST /api/tasks</code>:</p>
+      <pre><code>curl -X POST http://127.0.0.1:4173/api/tasks \
+  -H 'content-type: application/json' \
+  -d '{"title":"Mechanics problem set 4","type":"Coursework","course":"Mechanics","dueDate":null,"notes":"User said: I have this work today, add it","priority":4}'</code></pre>
+      <p>Edit fields with <code>PATCH /api/tasks/:id</code>, or with the <code>update_task</code> MCP tool. Use the task's exact ID; search first when the user describes a task by name.</p>
+    </section>
+
+    <section aria-labelledby="finding">
+      <h2 id="finding">Finding tasks</h2>
+      <ul>
+        <li>List and search with <code>GET /api/tasks?view=todo&amp;course=...&amp;q=...</code>: <code>view</code> is <code>todo</code>, <code>done</code>, or <code>all</code>; <code>course</code> filters by course name; <code>q</code> matches title and notes.</li>
+        <li>Fetch one task with <code>GET /api/tasks/:id</code>.</li>
+        <li>With MCP, use <code>search_tasks</code> (keyword search) and <code>list_tasks</code> (filtered listing) before creating, and <code>get_task</code> with the exact ID before editing or changing completion.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="completing">
+      <h2 id="completing">Completing &amp; reopening</h2>
+      <ul>
+        <li>Mark complete with <code>POST /api/tasks/:id/complete</code> or the <code>complete_task</code> MCP tool; reopen with <code>POST /api/tasks/:id/reopen</code> or the <code>reopen_task</code> MCP tool.</li>
+        <li>Use the task's exact ID. Search first when the user describes a task by name.</li>
+        <li>If a completion request could refer to more than one task, ask which one before changing anything.</li>
+        <li>Never delete tasks. Completing keeps them in history; reopen them when the user requests it.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="mcp">
+      <h2 id="mcp">MCP tools summary</h2>
+      <p>Available MCP tools: <code>list_tasks</code>, <code>search_tasks</code>, <code>get_task</code>, <code>create_task</code>, <code>update_task</code>, <code>complete_task</code>, <code>reopen_task</code>, and <code>list_courses</code>. The agent interface intentionally has no delete tool. Read each tool description and schema before calling it.</p>
+    </section>
+
+    <section aria-labelledby="safety">
+      <h2 id="safety">Safety rules</h2>
+      <ul>
+        <li>Never delete tasks. Complete or reopen them instead.</li>
+        <li>Search before creating; do not create duplicates. Create a task only for concrete work the user has asked to do.</li>
+        <li>Infer <code>Coursework</code> vs <code>Miscellaneous</code> with the exact supported course list above; <code>Miscellaneous</code> must have no course (<code>null</code>).</li>
+        <li>Interpret relative dates in the Asia/Kolkata timezone; store due dates as date-only <code>YYYY-MM-DD</code> values or <code>null</code>.</li>
+        <li>Infer priority as an integer from 1 to 10, or <code>null</code> only when genuinely unknown.</li>
+        <li>If a completion request could refer to more than one task, ask which one before changing anything.</li>
+        <li>Do not invent a deadline, course, requirement, or result. Do not schedule reminders. The app does not create reminders automatically.</li>
+      </ul>
+      <p>Scope note: a design-polish request authorizes presentation changes only, which is outside this task-management workflow — this guide covers tasks only.</p>
+    </section>
+
+    <footer><p><a href="/">Return to your task desk</a></p></footer>
+  </main>
+</body>
+</html>
