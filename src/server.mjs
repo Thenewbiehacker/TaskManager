@@ -286,7 +286,7 @@ const taskSchema = {
     dueDate: { type: ['string', 'null'], description: 'Date-only YYYY-MM-DD; interpret relative dates in Asia/Kolkata. Omit when no due date is given.' },
     notes: { type: 'string' },
     priority: { type: ['integer', 'null'], minimum: 1, maximum: 10, description: 'Infer from urgency, consequences, and emphasis; 10 is highest.' }
-  }, required: ['title', 'type']
+  }, required: ['title', 'type', 'course']
 };
 const tools = [
   { name: 'list_tasks', description: 'List tasks in priority-descending, due-date-ascending order for open tasks. Use before creating a task when a possible duplicate may exist. Views: todo, done, all.', inputSchema: { type: 'object', properties: { view: { type: 'string', enum: ['todo', 'done', 'all'], default: 'todo' }, course: { type: 'string', enum: courses }, q: { type: 'string' } } } },
