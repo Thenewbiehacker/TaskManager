@@ -59,3 +59,4 @@ Task objects use `id`, `title`, `course`, `type`, `dueDate`, `notes`, `priority`
 - `npm run check` checks JavaScript syntax. `npm test` exercises the seeded REST and MCP workflows against a temporary database.
 - `NITC_TASKS_DB` can point the server at another SQLite file, which is used by the isolated tests.
 - `NITC_NODE_BIN` can point `run.sh` at a specific Node.js 24+ binary when `node` is not on `PATH`.
+- `NITC_PUBLIC_HOST` (comma-separated) allowlists extra `Host` values and `https` origins for remote access, e.g. behind a Cloudflare Tunnel private hostname. Loopback hosts always work; anything else is rejected with 403.

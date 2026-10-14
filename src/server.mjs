@@ -72,8 +72,12 @@ function hostAllowed(hostHeader) {
       hostname = hostname.slice(0, colon);
     }
   }
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  if (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1') return true;
+  return publicHosts.has(hostname);
 }
+
+const publicHosts = new Set(String(process.env.NITC_PUBLIC_HOST ?? '')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 
 function originAllowed(originHeader) {
   if (!originHeader) return true;
@@ -81,10 +85,11 @@ function originAllowed(originHeader) {
   if (!raw) return true;
   let url;
   try { url = new URL(raw); } catch { return false; }
-  if (url.protocol !== 'http:') return false;
   let hostname = url.hostname.toLowerCase();
   if (hostname.startsWith('[') && hostname.endsWith(']')) hostname = hostname.slice(1, -1);
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  const loopback = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  if (url.protocol === 'http:' && loopback) return true;
+  return url.protocol === 'https:' && publicHosts.has(hostname);
 }
 
 function hasJsonContentType(req) {
