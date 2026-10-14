@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createHmac, createPublicKey, verify, timingSafeEqual } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -231,9 +231,153 @@ async function readBody(req) {
 }
 
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
+
+// ---- Optional Google sign-in gate (env-driven; off by default for local use) ----
+const GOOGLE_CLIENT_ID = process.env.NITC_GOOGLE_CLIENT_ID ?? '';
+const GOOGLE_CLIENT_SECRET = process.env.NITC_GOOGLE_CLIENT_SECRET ?? '';
+const ALLOWED_EMAIL = (process.env.NITC_ALLOWED_EMAIL ?? '').trim().toLowerCase();
+const AUTH_ENABLED = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && ALLOWED_EMAIL);
+const SESSION_SECRET = process.env.NITC_SESSION_SECRET ?? randomBytes(32).toString('hex');
+const SESSION_MAX_AGE = 30 * 24 * 3600;
+const pendingLogins = new Map(); // state -> { nonce, exp }
+let googleCerts = { at: 0, keys: {} };
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) {
+      try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* skip bad cookie */ }
+    }
+  }
+  return out;
+}
+function b64urlEncode(value) { return Buffer.from(value).toString('base64url'); }
+function sessionValue(email, exp) {
+  const payload = b64urlEncode(JSON.stringify({ e: email, x: exp }));
+  const sig = createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+  return `${payload}.${sig}`;
+}
+function sessionUser(req) {
+  const raw = parseCookies(req).nitc_session ?? '';
+  const dot = raw.lastIndexOf('.');
+  if (dot < 1) return null;
+  const payload = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+  const expected = createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (typeof data.e !== 'string' || typeof data.x !== 'number' || data.x * 1000 < Date.now()) return null;
+    return data.e;
+  } catch { return null; }
+}
+function cookieHeader(name, value, maxAge) {
+  // No Secure flag: the app itself serves plain HTTP behind the tunnel (TLS ends at Cloudflare).
+  // Traffic is still encrypted in transit; the cookie is HttpOnly + SameSite=Lax + HMAC-signed.
+  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
+}
+function redirect(res, location, cookies = []) {
+  const headers = { location, 'cache-control': 'no-store' };
+  if (cookies.length) headers['set-cookie'] = cookies;
+  res.writeHead(302, headers);
+  res.end();
+}
+function requestScheme(req) {
+  const forwarded = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase();
+  if (forwarded === 'https' || forwarded === 'http') return forwarded;
+  try {
+    const visitor = JSON.parse(req.headers['cf-visitor'] ?? '');
+    if (visitor.scheme === 'https' || visitor.scheme === 'http') return visitor.scheme;
+  } catch { /* fall through */ }
+  return 'http';
+}
+function redirectUri(req) {
+  const host = String(req.headers.host ?? '').trim();
+  if (!hostAllowed(host)) throw fail('Forbidden');
+  return `${requestScheme(req)}://${host}/auth/callback`;
+}
+function loginPage() {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Sign in · NITC HQ Tasks</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0a0b;color:#f2f2f0;font-family:system-ui,sans-serif;padding:20px;box-sizing:border-box}.card{max-width:360px;text-align:center;border:1px solid #232329;border-radius:16px;padding:36px 30px;background:#101013}.mark{width:44px;height:44px;border-radius:14px;background:#f2f2f0;color:#111113;display:grid;place-items:center;font-weight:800;font-size:20px;margin:0 auto 16px}h1{font-size:20px;margin:0 0 8px}p{font-size:13px;color:#8f8f96;margin:0 0 22px}a{display:inline-flex;align-items:center;gap:10px;background:#f2f2f0;color:#111113;text-decoration:none;font-weight:600;font-size:14px;padding:11px 20px;border-radius:10px}</style></head><body><div class="card"><div class="mark">N</div><h1>Private task desk</h1><p>Sign in with your Google account to continue.</p><a href="/auth/start">Continue with Google</a></div></body></html>`;
+}
+async function googleCertFor(kid) {
+  if (Date.now() - googleCerts.at > 3600 * 1000) {
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+    if (!res.ok) throw fail('Sign-in failed');
+    const data = await res.json();
+    googleCerts = { at: Date.now(), keys: Object.fromEntries((data.keys ?? []).map(k => [k.kid, k])) };
+  }
+  const jwk = googleCerts.keys[kid];
+  if (!jwk) throw fail('Sign-in failed');
+  return createPublicKey({ key: jwk, format: 'jwk' });
+}
+async function verifyGoogleToken(idToken, nonce) {
+  const parts = String(idToken).split('.');
+  if (parts.length !== 3) throw fail('Sign-in failed');
+  let header, payload;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch { throw fail('Sign-in failed'); }
+  if (header.alg !== 'RS256' || !header.kid) throw fail('Sign-in failed');
+  const key = await googleCertFor(header.kid);
+  const signed = Buffer.from(`${parts[0]}.${parts[1]}`);
+  const sig = Buffer.from(parts[2], 'base64url');
+  if (!verify('sha256', signed, key, sig)) throw fail('Sign-in failed');
+  const now = Math.floor(Date.now() / 1000);
+  const issOk = payload.iss === 'https://accounts.google.com' || payload.iss === 'accounts.google.com';
+  if (!issOk || payload.aud !== GOOGLE_CLIENT_ID || typeof payload.exp !== 'number' || payload.exp < now) throw fail('Sign-in failed');
+  if (payload.nonce !== nonce || payload.email_verified !== true) throw fail('Sign-in failed');
+  if (String(payload.email ?? '').toLowerCase() !== ALLOWED_EMAIL) throw fail('This account is not allowed');
+  return payload.email;
+}
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://127.0.0.1');
+    if (AUTH_ENABLED) {
+      if (req.method === 'GET' && url.pathname === '/login') {
+        if (sessionUser(req)) return redirect(res, '/');
+        const body = loginPage();
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body), 'cache-control': 'no-store' });
+        return res.end(body);
+      }
+      if (req.method === 'GET' && url.pathname === '/auth/start') {
+        const state = randomBytes(16).toString('hex');
+        const nonce = randomBytes(16).toString('hex');
+        pendingLogins.set(state, { nonce, exp: Date.now() + 10 * 60 * 1000 });
+        const params = new URLSearchParams({ response_type: 'code', client_id: GOOGLE_CLIENT_ID, redirect_uri: redirectUri(req), scope: 'openid email profile', state, nonce });
+        return redirect(res, `https://accounts.google.com/o/oauth2/v2/auth?${params}`, [cookieHeader('nitc_oauth', state, 600)]);
+      }
+      if (req.method === 'GET' && url.pathname === '/auth/callback') {
+        const state = url.searchParams.get('state') ?? '';
+        const cookies = parseCookies(req);
+        const pending = pendingLogins.get(state);
+        pendingLogins.delete(state);
+        if (!state || cookies.nitc_oauth !== state || !pending || pending.exp < Date.now()) throw fail('Sign-in failed');
+        const code = url.searchParams.get('code') ?? '';
+        if (!code) throw fail('Sign-in failed');
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET, redirect_uri: redirectUri(req), grant_type: 'authorization_code' })
+        });
+        if (!tokenRes.ok) throw fail('Sign-in failed');
+        const tokens = await tokenRes.json();
+        if (!tokens.id_token) throw fail('Sign-in failed');
+        const email = await verifyGoogleToken(tokens.id_token, pending.nonce);
+        const exp = Math.floor(Date.now() / 1000) + SESSION_MAX_AGE;
+        return redirect(res, '/', [cookieHeader('nitc_session', sessionValue(email, exp), SESSION_MAX_AGE), cookieHeader('nitc_oauth', '', 0)]);
+      }
+      if (req.method === 'GET' && url.pathname === '/logout') {
+        return redirect(res, '/login', [cookieHeader('nitc_session', '', 0)]);
+      }
+      if (!['/api/health'].includes(url.pathname) && !sessionUser(req)) {
+        if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'Sign in required' });
+        return redirect(res, '/login');
+      }
+    }
     if (url.pathname.startsWith('/api/')) {
       if (!hostAllowed(req.headers.host)) return json(res, 403, { error: 'Forbidden' });
       if (!originAllowed(req.headers.origin)) return json(res, 403, { error: 'Forbidden' });

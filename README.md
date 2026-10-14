@@ -60,3 +60,14 @@ Task objects use `id`, `title`, `course`, `type`, `dueDate`, `notes`, `priority`
 - `NITC_TASKS_DB` can point the server at another SQLite file, which is used by the isolated tests.
 - `NITC_NODE_BIN` can point `run.sh` at a specific Node.js 24+ binary when `node` is not on `PATH`.
 - `NITC_PUBLIC_HOST` (comma-separated) allowlists extra `Host` values and `https` origins for remote access, e.g. behind a Cloudflare Tunnel private hostname. Loopback hosts always work; anything else is rejected with 403.
+
+## Remote access with Google sign-in
+
+The app is local-first, but it can be exposed read-only-to-you through a Cloudflare Tunnel with a Google login wall. Set all four variables (never commit them) and restart:
+
+- `NITC_GOOGLE_CLIENT_ID` / `NITC_GOOGLE_CLIENT_SECRET` — from a Google Cloud OAuth web client. The authorized redirect URI is `https://<your-tunnel-host>/auth/callback`. Keep the consent screen in Testing mode with yourself as the test user; no verification is needed for personal use.
+- `NITC_ALLOWED_EMAIL` — your Gmail address. Only this account can sign in; every other Google account gets "This account is not allowed".
+- `NITC_PUBLIC_HOST` — the tunnel hostname (e.g. `<id>.cfargotunnel.com`) so `Host`/origin checks accept it.
+- `NITC_SESSION_SECRET` (optional) — random secret for session cookies. If unset, one is generated per boot, which signs everyone out on restart.
+
+When enabled, every page and API route (except `/api/health`, `/login`, and the OAuth callback) requires the session cookie: browsers redirect to `/login`, API calls get `401 { error: 'Sign in required' }`. Without these variables the app behaves exactly as before.
